@@ -21,3 +21,8 @@ def auth_client(user):
     client = APIClient()
     client.force_authenticate(user=user)
     return client
+
+
+@pytest.fixture
+def other_user(db):
+    return User.objects.create_user(email="other@example.com", password="StrongPass123!")
