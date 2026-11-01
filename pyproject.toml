@@ -1,0 +1,53 @@
+[project]
+name = "habit-tracker"
+version = "0.1.0"
+description = "Бэкенд SPA-приложения «Трекер полезных привычек»"
+authors = [
+    {name = "olasp",email = "olaspain@BK.RU"}
+]
+requires-python = ">=3.13,<4.0"
+dependencies = [
+    "django (>=6.0,<6.1)",
+    "djangorestframework (>=3.18.3,<4.0.0)",
+    "djangorestframework-simplejwt (>=5.5.1,<6.0.0)",
+    "psycopg2-binary (>=2.9.13,<3.0.0)",
+    "python-dotenv (>=1.2.4,<2.0.0)",
+    "celery (>=5.6.3,<6.0.0)",
+    "redis (>=8.1.0,<9.0.0)",
+    "django-celery-beat (>=2.9.0,<3.0.0)",
+    "django-cors-headers (>=4.9.0,<5.0.0)",
+    "drf-spectacular (>=0.30.0,<0.31.0)",
+    "requests (>=2.34.2,<3.0.0)"
+]
+
+[tool.poetry]
+package-mode = false
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "flake8 (>=7.5.0,<8.0.0)",
+    "pytest (>=9.2.0,<10.0.0)",
+    "pytest-django (>=4.14.0,<5.0.0)",
+    "pytest-cov (>=7.1.0,<8.0.0)",
+    "coverage (>=7.17.0,<8.0.0)"
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["tests.py", "test_*.py", "*_tests.py"]
+addopts = "--cov=. --cov-report=term-missing"
+
+[tool.coverage.run]
+omit = [
+    "*/migrations/*",
+    "manage.py",
+    "config/asgi.py",
+    "config/wsgi.py",
+    "*/tests/*",
+    "*/tests.py",
+    "conftest.py",
+]
