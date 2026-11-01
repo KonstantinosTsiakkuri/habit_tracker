@@ -6,6 +6,7 @@
 import os
 from pathlib import Path
 
+from celery.schedules import crontab
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -106,6 +107,16 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # --- Celery (используется в Блоке 5) ---
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# Расписание хранится в БД (django-celery-beat), записи из CELERY_BEAT_SCHEDULE подхватываются при старте
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+CELERY_BEAT_SCHEDULE = {
+    "send-habit-reminders": {
+        "task": "habits.tasks.send_habit_reminders",
+        "schedule": crontab(minute="*"),  # каждую минуту
+    },
+}
 
 # --- Telegram-бот (используется в Блоке 5) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
