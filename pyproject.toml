@@ -42,6 +42,7 @@ python_files = ["tests.py", "test_*.py", "*_tests.py"]
 addopts = "--cov=. --cov-report=term-missing"
 
 [tool.coverage.run]
+branch = true
 omit = [
     "*/migrations/*",
     "manage.py",

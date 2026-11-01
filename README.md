@@ -5,6 +5,20 @@
 Полезная привычка поощряется либо приятной привычкой (поле «связанная привычка»), либо произвольным
 вознаграждением. Пользователю приходят напоминания в Telegram по расписанию.
 
+## Содержание
+
+- [Стек](#стек)
+- [Структура проекта](#структура-проекта)
+- [Установка](#установка)
+- [Переменные окружения (.env)](#переменные-окружения-env)
+- [Миграции и запуск сервера](#миграции-и-запуск-сервера)
+- [Эндпоинты](#эндпоинты)
+- [Правила для привычек](#правила-для-привычек)
+- [Redis, Celery и Telegram-бот](#redis-celery-и-telegram-бот)
+- [Документация API](#документация-api)
+- [CORS](#cors)
+- [Тесты и линтер](#тесты-и-линтер)
+
 ## Стек
 
 - Python 3.13, Django 6.0, Django REST Framework
@@ -12,9 +26,20 @@
 - PostgreSQL
 - Celery + Redis + django-celery-beat (напоминания)
 - django-cors-headers, drf-spectacular (Swagger / ReDoc)
-- Poetry, pytest, flake8
+- Poetry, pytest (+ pytest-django, pytest-cov), flake8
+
+## Структура проекта
+
+```
+config/    настройки Django, Celery, корневые URL
+users/     кастомный пользователь (вход по email), регистрация, JWT, профиль
+habits/    модель привычки, валидаторы, API, Telegram-сервис, Celery-задача
+conftest.py  общие фикстуры pytest
+```
 
 ## Установка
+
+Нужны Python 3.13+, [Poetry](https://python-poetry.org/), PostgreSQL и (для напоминаний) Redis.
 
 ```bash
 # 1. Зависимости
@@ -22,17 +47,36 @@ poetry install
 
 # 2. Переменные окружения
 cp .env.template .env      # Windows PowerShell: Copy-Item .env.template .env
-# отредактируйте .env: SECRET_KEY, пароль БД, токен бота и т.д.
+# отредактируйте .env (см. ниже)
 
 # 3. База данных (PostgreSQL должен быть запущен)
 psql -U postgres -c "CREATE DATABASE habit_tracker;"
 ```
 
-## Запуск
+Если нужен `requirements.txt` вместо Poetry: `pip install -r requirements.txt` (только основные зависимости).
+
+## Переменные окружения (.env)
+
+Все настройки и секреты читаются из `.env` (в git не попадает). Шаблон со всеми ключами — `.env.template`.
+
+| Переменная | Назначение |
+|---|---|
+| `SECRET_KEY` | секретный ключ Django |
+| `DEBUG` | `True` только для разработки |
+| `ALLOWED_HOSTS` | разрешённые хосты через запятую |
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | подключение к PostgreSQL |
+| `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Redis для Celery |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_URL` | токен бота (от @BotFather) и адрес Bot API |
+| `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS` | домены фронтенда через запятую |
+
+Сгенерировать `SECRET_KEY`:
+`python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"`
+
+## Миграции и запуск сервера
 
 ```bash
 poetry run python manage.py migrate
-poetry run python manage.py createsuperuser   # по желанию, для админки
+poetry run python manage.py createsuperuser   # по желанию, для админки (/admin/)
 poetry run python manage.py runserver
 ```
 
@@ -47,17 +91,28 @@ poetry run python manage.py runserver
 | `POST /users/token/refresh/` | обновление access-токена | все |
 | `GET/PATCH /users/me/` | свой профиль (в т.ч. `tg_chat_id`) | авторизованные |
 | `GET/POST /habits/` | свои привычки (пагинация `limit`/`offset`) / создание | авторизованные |
-| `GET/PUT/PATCH/DELETE /habits/<id>/` | своя привычка | владелец |
-| `GET /habits/public/` | публичные привычки (только чтение) | авторизованные |
+| `GET/PUT/PATCH/DELETE /habits/<id>/` | своя привычка (чужая — 404) | владелец |
+| `GET /habits/public/` | публичные привычки (только чтение, пагинация) | авторизованные |
 
-Токен передаётся в заголовке `Authorization: Bearer <access>`.
+Токен передаётся в заголовке `Authorization: Bearer <access>`. Списки возвращают
+`{"count", "next", "previous", "results"}`, по умолчанию 5 записей на страницу (`?limit=` до 50, `?offset=`).
 
-## Celery и Telegram-бот
+## Правила для привычек
+
+- нельзя одновременно указывать вознаграждение и связанную привычку;
+- связанная привычка — только приятная, только своя и не сама на себя;
+- у приятной привычки нет вознаграждения и связанной привычки;
+- время выполнения — не больше 120 секунд;
+- периодичность — от 1 до 7 дней.
+
+Правила проверяются и при создании, и при частичном обновлении (PATCH), а также в админке.
+
+## Redis, Celery и Telegram-бот
 
 Напоминания рассылает периодическая задача `habits.tasks.send_habit_reminders`.
 Она запускается **каждую минуту**, выбирает полезные привычки, время которых совпадает с текущей минутой
 (по часовому поясу `Europe/Moscow`), у владельцев которых указан `tg_chat_id`, и отправляет сообщение
-с помощью Telegram Bot API. Напоминание повторяется не чаще, чем раз в `periodicity` дней.
+через Telegram Bot API. Напоминание повторяется не чаще, чем раз в `periodicity` дней.
 
 ### 1. Создайте бота и получите токен
 1. В Telegram откройте [@BotFather](https://t.me/BotFather) → `/newbot` → задайте имя.
@@ -95,6 +150,14 @@ poetry run celery -A config beat -l info
 Ключ `-B` (встроенный beat) на Windows не работает, поэтому beat запускается отдельно.
 Перед первым запуском beat должны быть применены миграции (`django_celery_beat` хранит расписание в БД).
 
+### 5. Проверка
+Создайте полезную привычку на ближайшую минуту (например, `"time": "14:06"`), и в это время бот пришлёт:
+```
+Я буду выпить воды в 14:06 в дом
+Награда: шоколадка
+Время на выполнение: 30 сек.
+```
+
 ## Документация API
 
 Интерактивная документация (drf-spectacular), доступна после `runserver`:
@@ -113,7 +176,14 @@ poetry run celery -A config beat -l info
 
 ## Тесты и линтер
 
+Тестам нужен PostgreSQL (создаётся отдельная БД `test_<DB_NAME>`, у пользователя должно быть право `CREATEDB`).
+Redis и реальный Telegram не нужны: сетевые вызовы замоканы.
+
 ```bash
-poetry run pytest          # тесты + покрытие (Telegram замокан, Redis не нужен)
-poetry run flake8 .
+poetry run pytest                                                  # тесты + отчёт о покрытии в консоли
+poetry run pytest --cov --cov-report=term-missing --cov-report=html  # + HTML-отчёт в htmlcov/
+poetry run flake8 .                                                # PEP 8 (max-line-length = 119)
 ```
+
+Текущее покрытие: **100 %** (154 теста, включая замер ветвлений). Из замера исключены миграции,
+`manage.py`, `wsgi.py`/`asgi.py` и сами тесты.
