@@ -45,6 +45,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -122,7 +123,8 @@ CELERY_BEAT_SCHEDULE = {
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_API_URL = os.getenv("TELEGRAM_API_URL", "https://api.telegram.org")
 
-# --- CORS / CSRF (подключение middleware — в Блоке 6) ---
+# --- CORS / CSRF ---
+# Разрешены только домены из .env; CORS_ALLOW_ALL_ORIGINS намеренно не используется
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS")
 CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
@@ -137,4 +139,22 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+# --- Документация API (drf-spectacular) ---
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Трекер полезных привычек API",
+    "DESCRIPTION": (
+        "Бэкенд SPA-приложения для формирования полезных привычек (по книге «Атомные привычки»).\n\n"
+        "Авторизация — JWT: получите токен в `POST /users/login/`, нажмите **Authorize** и вставьте "
+        "`access`-токен."
+    ),
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "TAGS": [
+        {"name": "users", "description": "Регистрация, JWT-авторизация и профиль"},
+        {"name": "habits", "description": "Привычки: CRUD, публичный список, пагинация"},
+    ],
+    "SWAGGER_UI_SETTINGS": {"persistAuthorization": True},
 }

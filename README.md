@@ -97,7 +97,19 @@ poetry run celery -A config beat -l info
 
 ## Документация API
 
-Будет добавлена в Блоке 6 (`/api/docs/`, `/api/redoc/`).
+Интерактивная документация (drf-spectacular), доступна после `runserver`:
+
+- Swagger UI: http://127.0.0.1:8000/api/docs/ — кнопка **Authorize**: вставьте `access`-токен из `POST /users/login/`
+- ReDoc: http://127.0.0.1:8000/api/redoc/
+- Схема OpenAPI: http://127.0.0.1:8000/api/schema/
+
+Проверка схемы: `poetry run python manage.py spectacular --validate --fail-on-warn`
+
+## CORS
+
+Запросы браузера разрешены только с доменов из `CORS_ALLOWED_ORIGINS` (`.env`), `CORS_ALLOW_ALL_ORIGINS` не используется.
+Домены фронтенда указываются через запятую, со схемой и без `/` в конце. Для POST-запросов с cookie
+(например, админка за прокси) домен нужно добавить и в `CSRF_TRUSTED_ORIGINS`.
 
 ## Тесты и линтер
 

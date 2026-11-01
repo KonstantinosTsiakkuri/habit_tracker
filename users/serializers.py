@@ -30,3 +30,16 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = User
         fields = ("id", "email", "first_name", "last_name", "tg_chat_id")
         read_only_fields = ("id", "email")
+
+
+class TokenPairSerializer(serializers.Serializer):
+    """Описание ответа входа (только для документации)."""
+
+    access = serializers.CharField(help_text="Короткоживущий токен для заголовка Authorization")
+    refresh = serializers.CharField(help_text="Долгоживущий токен для получения нового access")
+
+
+class TokenAccessSerializer(serializers.Serializer):
+    """Описание ответа обновления токена (только для документации)."""
+
+    access = serializers.CharField(help_text="Новый access-токен")
