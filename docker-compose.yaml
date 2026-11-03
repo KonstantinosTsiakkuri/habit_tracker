@@ -1,0 +1,134 @@
+# Запуск всего проекта одной командой:
+#   локально:  docker compose up -d --build
+#   на сервере: docker compose pull && docker compose up -d   (образ собирает GitHub Actions, см. .github/workflows)
+#
+# Все секреты и настройки берутся из файла .env (env_file). В самом compose-файле секретов нет.
+# Адреса сервисов внутри сети Docker (db, redis) задаются здесь переопределением environment:
+# так один и тот же .env работает и без Docker (localhost), и в Docker.
+#
+# Наружу открыт только nginx (порт 80). app, db и redis доступны лишь внутри сети compose.
+name: habit_tracker
+
+x-app-common: &app-common
+  # Локально образ собирается из исходников (build у сервиса app), на сервере подставляется образ из GHCR:
+  # APP_IMAGE=ghcr.io/konstantinostsiakkuri/habit_tracker:<sha>
+  image: ${APP_IMAGE:-habit_tracker:local}
+  env_file: .env
+  environment:
+    DB_HOST: db
+    DB_PORT: "5432"
+    CELERY_BROKER_URL: redis://redis:6379/0
+    CELERY_RESULT_BACKEND: redis://redis:6379/0
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:17-alpine
+    # Только три переменные из .env, а не весь env_file: БД не должна видеть чужие секреты (токен бота и т.п.)
+    environment:
+      POSTGRES_DB: ${DB_NAME:?DB_NAME не задан в .env}
+      POSTGRES_USER: ${DB_USER:?DB_USER не задан в .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD не задан в .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      # $$ — чтобы переменные подставил shell внутри контейнера, а не compose
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  app:
+    <<: *app-common
+    build: .
+    # Перед запуском gunicorn: миграции и сбор статики в общий volume (docker/entrypoint.sh).
+    # При переопределении entrypoint compose сбрасывает CMD образа, поэтому command задан явно.
+    entrypoint: ["sh", "/app/docker/entrypoint.sh"]
+    command:
+      - sh
+      - -c
+      - exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers $${GUNICORN_WORKERS:-2} --timeout 60 --access-logfile -
+    expose:
+      - "8000"
+    volumes:
+      - static_data:/app/staticfiles
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Здоров = миграции применены, gunicorn отвечает и БД доступна (/health/).
+      # В заголовке Host первый адрес из ALLOWED_HOSTS, иначе Django ответит 400.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request as u; h = os.environ.get('ALLOWED_HOSTS', 'localhost').split(',')[0].strip(); u.urlopen(u.Request('http://127.0.0.1:8000/health/', headers={'Host': h}), timeout=5)"
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+  celery_worker:
+    <<: *app-common
+    # На Linux работает пул prefork, поэтому --pool=solo (нужен на Windows) не требуется.
+    # Число процессов ограничено: на слабой ВМ по умолчанию (по числу ядер хоста) было бы слишком много.
+    command:
+      - sh
+      - -c
+      - exec celery -A config worker -l INFO --concurrency=$${CELERY_CONCURRENCY:-2}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+
+  celery_beat:
+    <<: *app-common
+    # Расписание хранится в БД (django_celery_beat), поэтому старт только после app: миграции уже применены
+    command: celery -A config beat -l INFO
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_data:/app/staticfiles:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  redis_data:
+  static_data:
