@@ -1,0 +1,145 @@
+# CI: проверка стиля, тесты, сборка Docker-образа (и публикация в GHCR при push).
+#
+#   lint  ──┐
+#           ├──►  build  (на push: образ публикуется в ghcr.io; на pull_request: только сборка)
+#   test  ──┘
+name: CI/CD
+
+on:
+  push:
+    branches: [develop, feature/docker_ci_cd]
+  pull_request:
+    branches: [develop]
+
+# Права по умолчанию минимальные; job build расширяет их до записи пакетов
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13"
+  POETRY_VERSION: "2.4.3"
+  # Имя образа строго в нижнем регистре (требование реестра), поэтому задано явно
+  IMAGE_NAME: ghcr.io/konstantinostsiakkuri/habit_tracker
+
+jobs:
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Poetry ставится до setup-python: действие использует его для вычисления ключа кэша
+      - name: Install Poetry
+        run: pipx install poetry==${{ env.POETRY_VERSION }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: poetry
+
+      - name: Install dependencies
+        run: poetry install --no-root
+
+      - name: flake8
+        run: poetry run flake8 .
+
+  test:
+    name: Tests (pytest + coverage)
+    runs-on: ubuntu-latest
+
+    # PostgreSQL как service-контейнер: тестам нужна настоящая БД (pytest-django создаёт test_<DB_NAME>)
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: habit_tracker
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Тестовые значения: это не секреты (БД живёт только на время job). Redis тестам не нужен:
+    # Celery-задачи вызываются напрямую, а сеть Telegram замокана.
+    env:
+      SECRET_KEY: ci-only-not-a-secret
+      DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DB_NAME: habit_tracker
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      CELERY_BROKER_URL: memory://
+      CELERY_RESULT_BACKEND: cache+memory://
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_API_URL: https://api.telegram.org
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      CSRF_TRUSTED_ORIGINS: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Poetry
+        run: pipx install poetry==${{ env.POETRY_VERSION }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: poetry
+
+      - name: Install dependencies
+        run: poetry install --no-root
+
+      # Порог покрытия (fail_under = 80) задан в pyproject.toml: ниже 80 % pytest завершается ошибкой
+      - name: pytest
+        run: poetry run pytest --cov-report=term-missing
+
+  build:
+    name: Build Docker image
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Вход в реестр нужен только для публикации (push); для pull_request образ лишь собирается
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Теги: latest и полный sha коммита. Метки (labels) включают org.opencontainers.image.source,
+      # по которой GitHub связывает пакет с репозиторием
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=,format=long
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Кэш слоёв в хранилище GitHub Actions: повторные сборки не скачивают зависимости заново
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Без provenance-аттестаций в реестре остаются только нужные теги
+          provenance: false
