@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "django_celery_beat",
     "drf_spectacular",
+    "drf_spectacular_sidecar",
     # Приложения проекта
     "users",
     "habits",
@@ -157,4 +158,28 @@ SPECTACULAR_SETTINGS = {
         {"name": "habits", "description": "Привычки: CRUD, публичный список, пагинация"},
     ],
     "SWAGGER_UI_SETTINGS": {"persistAuthorization": True},
+    # Swagger UI и ReDoc берутся из пакета drf-spectacular-sidecar и отдаются как обычная статика
+    # (в Docker её раздаёт nginx), поэтому документация работает без доступа к CDN
+    "SWAGGER_UI_DIST": "SIDECAR",
+    "SWAGGER_UI_FAVICON_HREF": "SIDECAR",
+    "REDOC_DIST": "SIDECAR",
+}
+
+# --- Работа за reverse proxy (nginx в Docker) ---
+# nginx всегда перезаписывает X-Forwarded-Proto, поэтому ему можно доверять:
+# Django узнаёт, по какой схеме клиент обратился к nginx, и строит корректные абсолютные ссылки (next/previous)
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# --- Логирование ---
+# В контейнере логи читаются через `docker compose logs`, поэтому пишем всё в stdout
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "default"},
+    },
+    "root": {"handlers": ["console"], "level": os.getenv("LOG_LEVEL", "INFO")},
 }

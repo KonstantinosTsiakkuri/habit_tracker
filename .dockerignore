@@ -1,0 +1,40 @@
+# Всё, что не нужно внутри образа: секреты, служебные папки, кэши, отчёты
+.git
+.gitignore
+.gitattributes
+.github
+.idea
+.vscode
+
+# Секреты и окружение
+.env
+.env.*
+!.env.template
+
+# Python
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+
+# Тесты и покрытие (отчёты)
+htmlcov
+.coverage
+.coverage.*
+
+# Артефакты запуска
+staticfiles
+media
+*.log
+celerybeat-schedule*
+
+# Конфигурация развёртывания (в образ не входит)
+docker-compose*.yaml
+docker-compose*.yml
+nginx
+
+# Документы работы
+Claude_code
+README.md
