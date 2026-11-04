@@ -143,3 +143,104 @@ jobs:
           cache-to: type=gha,mode=max
           # Без provenance-аттестаций в реестре остаются только нужные теги
           provenance: false
+
+  deploy:
+    name: Deploy to server
+    needs: build
+    # Только на push (ветки уже ограничены триггером workflow): на pull_request секреты не используются
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Первый деплой на слабой ВМ долгий (скачивание образов, миграции), поэтому запас по времени
+    timeout-minutes: 30
+    # Два деплоя одновременно недопустимы: второй ждёт первого, а не отменяет его на середине
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      # Сервер запускает ровно тот образ, который собран из этого коммита
+      APP_IMAGE: ghcr.io/konstantinostsiakkuri/habit_tracker:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Секреты передаются через env (а не вставляются в команду): GitHub маскирует их значения в логах
+      - name: Prepare SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config <<EOF
+          Host server
+            HostName $SSH_HOST
+            User $SSH_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            ServerAliveInterval 30
+            ServerAliveCountMax 10
+          EOF
+          chmod 600 ~/.ssh/config
+          ssh server 'echo "SSH OK: $(whoami)@$(hostname)"'
+
+      - name: Copy compose and nginx config
+        run: |
+          ssh server 'mkdir -p ~/habit_tracker/nginx'
+          scp docker-compose.yaml server:habit_tracker/docker-compose.yaml
+          scp nginx/nginx.conf server:habit_tracker/nginx/nginx.conf
+
+      # .env собирается из секрета прямо на сервере (через stdin: значения не попадают в аргументы команд и логи).
+      # В конец дописывается APP_IMAGE: так compose берёт нужный образ и при ручном запуске на сервере
+      - name: Write .env on server
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          { printf '%s\n' "$ENV_FILE"; printf 'APP_IMAGE=%s\n' "$APP_IMAGE"; } \
+            | ssh server 'umask 077 && cat > ~/habit_tracker/.env && chmod 600 ~/habit_tracker/.env'
+
+      # Вход в ghcr.io токеном job; пароль передаётся через stdin (не виден в списке процессов)
+      - name: Log in to GHCR on server
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | ssh server "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
+
+      - name: Pull images and restart services
+        run: |
+          ssh server 'cd ~/habit_tracker && docker compose pull && docker compose up -d --no-build --remove-orphans'
+          ssh server 'docker image prune -f'
+
+      # Ожидание готовности с повторными попытками (до ~7 минут): на слабой ВМ миграции идут долго
+      - name: Smoke test
+        run: |
+          check() {
+            curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://$SSH_HOST$1" || true
+          }
+          for i in $(seq 1 40); do
+            code=$(check /health/)
+            echo "attempt $i: /health/ -> $code"
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+          [ "$code" = "200" ] || { echo "::error::/health/ не ответил 200"; exit 1; }
+          for path in /api/docs/ /api/schema/ /static/admin/css/base.css; do
+            code=$(check "$path")
+            echo "$path -> $code"
+            [ "$code" = "200" ] || { echo "::error::$path ответил $code"; exit 1; }
+          done
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          ssh server 'cd ~/habit_tracker && docker compose ps -a && docker compose logs --tail=100' || true
+
+      # Токен на сервере не должен оставаться в ~/.docker/config.json
+      - name: Log out from GHCR on server
+        if: always()
+        run: ssh server 'docker logout ghcr.io' || true
